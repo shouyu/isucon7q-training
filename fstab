@@ -1,0 +1,2 @@
+LABEL=cloudimg-rootfs   /        ext4   defaults,discard        0 0
+tmpfs   /data   tmpfs   defaults,noatime,nodiratime,size=1g     0       0
