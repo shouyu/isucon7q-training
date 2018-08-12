@@ -64,7 +64,18 @@ def get_initialize():
     cur.execute("DELETE FROM channel WHERE id > 10")
     cur.execute("DELETE FROM message WHERE id > 10000")
     cur.execute("DELETE FROM haveread")
+    cur.execute("DELETE FROM lastread")
     # cur.execute("ALTER TABLE message ADD INDEX channel_idx(channel_id)")
+    '''
+    CREATE TABLE lastread
+(
+    id INT PRIMARY KEY NOT NULL AUTO_INCREMENT,
+    user_id BIGINT(20) NOT NULL,
+    channel_id BIGINT(20) NOT NULL,
+    max_message_id BIGINT(20) NOT NULL
+);
+CREATE UNIQUE INDEX lastread_user_id_channel_id_uindex ON lastread (user_id, channel_id);
+    '''
     cur.close()
     return ('', 204)
 
@@ -208,8 +219,6 @@ def get_message():
     channel_id = int(flask.request.args.get('channel_id'))
     last_message_id = int(flask.request.args.get('last_message_id'))
     cur = dbh().cursor()
-    # cur.execute("SELECT * FROM message WHERE id > %s AND channel_id = %s ORDER BY id DESC LIMIT 100",
-    #             (last_message_id, channel_id))
     cur.execute("""
     SELECT
        m.id,
@@ -228,11 +237,11 @@ FROM (
      """, (last_message_id, channel_id))
     rows = cur.fetchall()
     response = []
+    max_message_id = 0
     for row in rows:
         r = {}
         r['id'] = row['id']
-        # cur.execute("SELECT name, display_name, avatar_icon FROM user WHERE id = %s", (row['user_id'],))
-        # r['user'] = cur.fetchone()
+        max_message_id = max(max_message_id, row['id'])
         r['user'] = {'name': row['name'],
                      'display_name': row['display_name'],
                      'avatar_icon': row['avatar_icon']}
@@ -241,11 +250,10 @@ FROM (
         response.append(r)
     response.reverse()
 
-    max_message_id = max(r['id'] for r in rows) if rows else 0
     cur.execute(
-        'INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)'
-        ' VALUES (%s, %s, %s, NOW(), NOW())'
-        ' ON DUPLICATE KEY UPDATE message_id = %s, updated_at = NOW()',
+        'INSERT INTO lastread (user_id, channel_id, max_message_id)'
+        ' VALUES (%s, %s, %s)'
+        ' ON DUPLICATE KEY UPDATE max_message_id = %s',
         (user_id, channel_id, max_message_id, max_message_id))
 
     return flask.jsonify(response)
@@ -257,33 +265,36 @@ def fetch_unread():
     if not user_id:
         flask.abort(403)
 
-    # time.sleep(1.0)
-
     cur = dbh().cursor()
-    cur.execute('SELECT id FROM channel')
-    rows = cur.fetchall()
-    channel_ids = [row['id'] for row in rows]
+    cur.execute("""
+SELECT
+  unreads.channel_id,
+  count(*) as cnt
+FROM
+  message LEFT JOIN (SELECT
+     c.id                          AS channel_id,
+     ifnull(s.max_message_id, '0') AS max_message_id
+   FROM (SELECT id
+         FROM channel) c LEFT OUTER JOIN (SELECT
+                                            channel_id,
+                                            max_message_id
+                                          FROM lastread
+                                          WHERE user_id = %s) s ON c.id = s.channel_id) AS unreads
+  ON message.channel_id = unreads.channel_id
+WHERE message.id > unreads.max_message_id
+GROUP BY
+  unreads.channel_id
+    """, (user_id,))
 
     res = []
-    for channel_id in channel_ids:
-        cur.execute(
-            'SELECT * FROM haveread WHERE user_id = %s AND channel_id = %s',
-            (user_id, channel_id))
-        row = cur.fetchone()
-        if row:
-            cur.execute(
-                'SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s AND %s < id',
-                (channel_id, row['message_id']))
-        else:
-            cur.execute(
-                'SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s',
-                (channel_id,))
+    rows = cur.fetchall()
+    for row in rows:
         r = {}
-        r['channel_id'] = channel_id
-        r['unread'] = int(cur.fetchone()['cnt'])
+        r['channel_id'] = row['channel_id']
+        r['unread'] = int(row['cnt'])
         res.append(r)
-    return flask.jsonify(res)
 
+    return flask.jsonify(res)
 
 @app.route('/history/<int:channel_id>')
 @login_required
@@ -297,7 +308,7 @@ def get_history(channel_id):
 
     N = 20
     cur = dbh().cursor()
-    cur.execute("SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s",
+    cur.execute("SELECT COUNT(1) as cnt FROM message WHERE channel_id = %s",
                 (channel_id,))
     cnt = int(cur.fetchone()['cnt'])
     max_page = math.ceil(cnt / N)
@@ -432,17 +443,5 @@ def ext2mime(ext):
     return ''
 
 
-@app.route('/icons/<file_name>')
-def get_icon(file_name):
-    # cur = dbh().cursor()
-    # cur.execute("SELECT * FROM image WHERE name = %s", (file_name,))
-    # row = cur.fetchone()
-    # ext = os.path.splitext(file_name)[1] if '.' in file_name else ''
-    # mime = ext2mime(ext)
-    # if row and mime:
-    #     return flask.Response(row['data'], mimetype=mime)
-    flask.abort(404)
-
-
 if __name__ == "__main__":
-    app.run(port=8081, debug=True, threaded=True)
+    app.run(port=8082, debug=True, threaded=True)

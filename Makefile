@@ -10,9 +10,10 @@ mysql:
 	sudo rm -f /var/log/mysql/*
 	
 	sudo systemctl restart mysql.service
-	echo "set global slow_query_log = on;"| mysql -h127.0.0.1 -uroot isubata
+	echo "set global slow_query_log = off;"| mysql -h127.0.0.1 -uroot isubata
+#	echo "set global slow_query_log = on;"| mysql -h127.0.0.1 -uroot isubata
 	echo "set global slow_query_log_file = '/var/log/mysql/mysql-slow.log';"| mysql -h127.0.0.1 -uroot isubata
-	echo "set global long_query_time = 0.1;"| mysql -h127.0.0.1 -uroot isubata
+	echo "set global long_query_time = 0.01;"| mysql -h127.0.0.1 -uroot isubata
 	sudo ls /var/log/mysql/
 	
 nginx: 
@@ -31,7 +32,6 @@ app:
 	sudo systemctl start isubata.python.service
 	
 bench:
-	
 	cd /home/isucon/isubata/bench && ./bin/bench -remotes=127.0.0.1 -output result.json
 	
 stat:
