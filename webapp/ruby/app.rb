@@ -1,9 +1,11 @@
 require 'digest/sha1'
 require 'mysql2'
 require 'sinatra/base'
+require 'hamlit'
 
 class App < Sinatra::Base
   configure do
+    set :haml, { escape_html: false }
     set :session_secret, 'tonymoris'
     set :public_folder, File.expand_path('../../public', __FILE__)
     set :avatar_max_size, 1 * 1024 * 1024
@@ -39,6 +41,16 @@ class App < Sinatra::Base
     db.query("DELETE FROM channel WHERE id > 10")
     db.query("DELETE FROM message WHERE id > 10000")
     db.query("DELETE FROM haveread")
+
+    `rm -f /data/icons/*`
+    `mkdir -p /data/icons`
+    statement = db.prepare('SELECT * FROM image ORDER BY id')
+    rows = statement.execute.to_a
+    statement.close
+    rows.each do |row|
+      File.binwrite("/data/icons/#{row['name']}", row['data'])
+    end
+
     204
   end
 
@@ -46,7 +58,7 @@ class App < Sinatra::Base
     if session.has_key?(:user_id)
       return redirect '/channel/1', 303
     end
-    erb :index
+    haml :index
   end
 
   get '/channel/:channel_id' do
@@ -56,11 +68,11 @@ class App < Sinatra::Base
 
     @channel_id = params[:channel_id].to_i
     @channels, @description = get_channel_list_info(@channel_id)
-    erb :channel
+    haml :channel
   end
 
   get '/register' do
-    erb :register
+    haml :register
   end
 
   post '/register' do
@@ -80,7 +92,7 @@ class App < Sinatra::Base
   end
 
   get '/login' do
-    erb :login
+    haml :login
   end
 
   post '/login' do
@@ -118,28 +130,33 @@ class App < Sinatra::Base
 
     channel_id = params[:channel_id].to_i
     last_message_id = params[:last_message_id].to_i
-    statement = db.prepare('SELECT * FROM message WHERE id > ? AND channel_id = ? ORDER BY id DESC LIMIT 100')
+    # statement = db.prepare('SELECT * FROM message WHERE id > ? AND channel_id = ? ORDER BY id DESC LIMIT 100')
+    statement = db.prepare('SELECT *, message.id as mid FROM message JOIN user ON message.user_id = user.id WHERE message.id > ? AND channel_id = ? ORDER BY message.id DESC LIMIT 100')
     rows = statement.execute(last_message_id, channel_id).to_a
+    statement.close
     response = []
     rows.each do |row|
       r = {}
-      r['id'] = row['id']
-      statement = db.prepare('SELECT name, display_name, avatar_icon FROM user WHERE id = ?')
-      r['user'] = statement.execute(row['user_id']).first
+      # r['id'] = row['id']
+      r['id'] = row['mid']
+      # statement = db.prepare('SELECT name, display_name, avatar_icon FROM user WHERE id = ?')
+      r['user'] = { name: row['name'], display_name: row['display_name'], avatar_icon: row['avatar_icon'] }
+      # r['user'] = statement.execute(row['user_id']).first
       r['date'] = row['created_at'].strftime("%Y/%m/%d %H:%M:%S")
       r['content'] = row['content']
       response << r
-      statement.close
+      # statement.close
     end
     response.reverse!
 
-    max_message_id = rows.empty? ? 0 : rows.map { |row| row['id'] }.max
+    max_message_id = rows.empty? ? 0 : rows.map { |row| row['mid'] }.max
     statement = db.prepare([
       'INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at) ',
       'VALUES (?, ?, ?, NOW(), NOW()) ',
       'ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()',
     ].join)
     statement.execute(user_id, channel_id, max_message_id, max_message_id)
+    statement.close
 
     content_type :json
     response.to_json
@@ -151,14 +168,12 @@ class App < Sinatra::Base
       return 403
     end
 
-    sleep 1.0
-
     rows = db.query('SELECT id FROM channel').to_a
     channel_ids = rows.map { |row| row['id'] }
 
     res = []
     channel_ids.each do |channel_id|
-      statement = db.prepare('SELECT * FROM haveread WHERE user_id = ? AND channel_id = ?')
+      statement = db.prepare('SELECT message_id FROM haveread WHERE user_id = ? AND channel_id = ? LIMIT 1')
       row = statement.execute(user_id, channel_id).first
       statement.close
       r = {}
@@ -239,16 +254,16 @@ class App < Sinatra::Base
     end
 
     @self_profile = user['id'] == @user['id']
-    erb :profile
+    haml :profile
   end
-  
+
   get '/add_channel' do
     if user.nil?
       return redirect '/login', 303
     end
 
     @channels, = get_channel_list_info
-    erb :add_channel
+    haml :add_channel
   end
 
   post '/add_channel' do
@@ -303,9 +318,11 @@ class App < Sinatra::Base
     end
 
     if !avatar_name.nil? && !avatar_data.nil?
-      statement = db.prepare('INSERT INTO image (name, data) VALUES (?, ?)')
-      statement.execute(avatar_name, avatar_data)
-      statement.close
+      # statement = db.prepare('INSERT INTO image (name, data) VALUES (?, ?)')
+      # statement.execute(avatar_name, avatar_data)
+      # statement.close
+      File.binwrite("/data/icons/#{avatar_name}", avatar_data)
+
       statement = db.prepare('UPDATE user SET avatar_icon = ? WHERE id = ?')
       statement.execute(avatar_name, user['id'])
       statement.close
@@ -320,19 +337,19 @@ class App < Sinatra::Base
     redirect '/', 303
   end
 
-  get '/icons/:file_name' do
-    file_name = params[:file_name]
-    statement = db.prepare('SELECT * FROM image WHERE name = ?')
-    row = statement.execute(file_name).first
-    statement.close
-    ext = file_name.include?('.') ? File.extname(file_name) : ''
-    mime = ext2mime(ext)
-    if !row.nil? && !mime.empty?
-      content_type mime
-      return row['data']
-    end
-    404
-  end
+  # get '/icons/:file_name' do
+  #   file_name = params[:file_name]
+  #   statement = db.prepare('SELECT * FROM image WHERE name = ? LIMIT 1')
+  #   row = statement.execute(file_name).first
+  #   statement.close
+  #   ext = file_name.include?('.') ? File.extname(file_name) : ''
+  #   mime = ext2mime(ext)
+  #   if !row.nil? && !mime.empty?
+  #     content_type mime
+  #     return row['data']
+  #   end
+  #   404
+  # end
 
   private
 
@@ -340,10 +357,11 @@ class App < Sinatra::Base
     return @db_client if defined?(@db_client)
 
     @db_client = Mysql2::Client.new(
-      host: ENV.fetch('ISUBATA_DB_HOST') { 'localhost' },
-      port: ENV.fetch('ISUBATA_DB_PORT') { '3306' },
+      socket: '/var/run/mysqld/mysqld.sock',
+      # host: ENV.fetch('ISUBATA_DB_HOST') { 'localhost' },
+      # port: ENV.fetch('ISUBATA_DB_PORT') { '3306' },
       username: ENV.fetch('ISUBATA_DB_USER') { 'root' },
-      password: ENV.fetch('ISUBATA_DB_PASSWORD') { '' },
+      password: ENV.fetch('ISUBATA_DB_PASSWORD') { 'root' },
       database: 'isubata',
       encoding: 'utf8mb4'
     )
@@ -360,9 +378,8 @@ class App < Sinatra::Base
 
   def db_add_message(channel_id, user_id, content)
     statement = db.prepare('INSERT INTO message (channel_id, user_id, content, created_at) VALUES (?, ?, ?, NOW())')
-    messages = statement.execute(channel_id, user_id, content)
+    statement.execute(channel_id, user_id, content)
     statement.close
-    messages
   end
 
   def random_string(n)
